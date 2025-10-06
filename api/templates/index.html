@@ -1,11 +1,141 @@
-<!-- templates/index.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>NexFi</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NexFi | Login</title>
+
+    <style>
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            color: #f9f9f9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(15px);
+            border-radius: 20px;
+            padding: 2.5rem;
+            text-align: center;
+            width: 90%;
+            max-width: 420px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            animation: fadeIn 0.8s ease forwards;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            background: linear-gradient(to right, #f9d423, #ff4e50);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+            text-align: left;
+        }
+
+        input {
+            width: 100%;
+            padding: 0.8rem;
+            border: none;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            font-size: 1rem;
+        }
+
+        input::placeholder {
+            color: rgba(255,255,255,0.6);
+        }
+
+        .btn-login {
+            width: 100%;
+            background: #f9d423;
+            color: #111;
+            font-weight: 700;
+            border: none;
+            padding: 0.9rem;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-top: 0.5rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .btn-login:hover {
+            transform: scale(1.03);
+            box-shadow: 0 8px 20px rgba(249, 212, 35, 0.3);
+        }
+
+        .message {
+            margin-top: 1.2rem;
+            font-size: 0.95rem;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
 </head>
+
 <body>
-    <h1>Welcome to NexFi</h1>
-    <p>This is the backend root page.</p>
+    <div class="card">
+        <h1>NexFi Login</h1>
+        <form id="loginForm">
+            <div class="form-group">
+                <input type="text" id="username" placeholder="Username" required />
+            </div>
+            <div class="form-group">
+                <input type="password" id="password" placeholder="Password" required />
+            </div>
+            <button type="submit" class="btn-login">Log In</button>
+        </form>
+
+        <div class="message" id="message"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const message = document.getElementById('message');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            message.textContent = "Logging in...";
+
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    message.style.color = '#4ade80'; // green
+                    message.textContent = `✅ Welcome, ${data.username}!`;
+                } else {
+                    message.style.color = '#f87171'; // red
+                    message.textContent = `❌ ${data.message}`;
+                }
+            } catch (err) {
+                message.style.color = '#f87171';
+                message.textContent = '⚠️ Login failed. Please try again.';
+                console.error(err);
+            }
+        });
+    </script>
 </body>
 </html>
