@@ -397,13 +397,6 @@ def search_users():
         logger.error(f"❌ Search users error: {str(e)}")
         return jsonify({"users": [], "error": str(e)}), 500
 
-
-if __name__ == '__main__':
-    logger.info("🚀 Starting NexFi Flask server...")
-    logger.info("📡 API available at http://0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
-
 #
 if __name__ == '__main__':
     logger.info("🚀 Starting NexFi Flask server...")

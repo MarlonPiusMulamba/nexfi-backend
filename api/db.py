@@ -20,8 +20,8 @@ MONGO_DB_NAME = "nup"
 try:
     client = pymongo.MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=5000,
-        connectTimeoutMS=10000,
+        serverSelectionTimeoutMS=50000,
+        connectTimeoutMS=100000,
         maxPoolSize=50
     )
     db = client[MONGO_DB_NAME]
