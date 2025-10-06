@@ -4,6 +4,10 @@ import datetime
 import os
 import bcrypt
 import logging
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

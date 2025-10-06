@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import db
+from . import db
 import logging
 
 app = Flask(__name__)
@@ -21,6 +21,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@app.route('/')
+def home():
+    return jsonify({"message": "Welcome to NexFi Backend API 🚀"})
 
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -385,7 +388,7 @@ if __name__ == '__main__':
 if __name__ == '__main__':
     logger.info("🚀 Starting NexFi Flask server...")
     logger.info("📡 API available at http://0.0.0.0:5000")
-    app.run()
+    app.run(debug=True)
 
     app = app
     
