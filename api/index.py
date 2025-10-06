@@ -38,10 +38,9 @@ def handle_preflight():
         return response
 
 
-@app.route('/')
-def home():
-    return jsonify({"message": "Welcome to NexFi Backend API 🚀"})
-
+# @app.route('/')
+# def home():
+#     return jsonify({"message": "Welcome to NexFi Backend API 🚀"})
 
 
 @app.route('/api/register', methods=['POST'])
