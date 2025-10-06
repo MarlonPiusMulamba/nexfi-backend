@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify,render_template
 from flask_cors import CORS
 from . import db
 import logging
@@ -38,9 +38,11 @@ def handle_preflight():
         return response
 
 
-# @app.route('/')
-# def home():
-#     return jsonify({"message": "Welcome to NexFi Backend API 🚀"})
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return render_template('index.html')
 
 
 @app.route('/api/register', methods=['POST'])
