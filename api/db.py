@@ -6,7 +6,8 @@ import bcrypt
 import logging
 from dotenv import load_dotenv
 
-
+#mongodb+srv://pius:pius7890@cluster0.kjfmyxe.mongodb.net/
+#mongodb+srv://pius:<db_password>@cluster0.kjfmyxe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
 load_dotenv()
 
 # Configure logging
@@ -14,8 +15,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB Atlas Configuration
-MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:Mongo2604@cluster0.8m2lu.mongodb.net/nup?retryWrites=true&w=majority")
-MONGO_DB_NAME = "nup"
+MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://pius:pius7890@cluster0.kjfmyxe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_DB_NAME = "nexfi"
 
 try:
     client = pymongo.MongoClient(
