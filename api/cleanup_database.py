@@ -8,7 +8,7 @@ from bson.objectid import ObjectId
 import os
 
 # MongoDB Configuration
-MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:Mongo2604@cluster0.8m2lu.mongodb.net/nup?retryWrites=true&w=majority")
+MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0/nexfi")
 MONGO_DB_NAME = "nup"
 
 print("🔧 Connecting to MongoDB...")
