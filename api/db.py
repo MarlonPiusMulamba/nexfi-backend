@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB Atlas Configuration
-MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0/nexfi")
+MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890!@cluster0.abcde.mongodb.net/nexfi?retryWrites=true&w=majority")
 MONGO_DB_NAME = "nexfi"
 
 # Initialize client without testing connection
