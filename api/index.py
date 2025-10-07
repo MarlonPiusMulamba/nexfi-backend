@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify,render_template
 from flask_cors import CORS
 from . import db
 import logging
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 app = Flask(__name__)
 CORS(app, resources={

@@ -17,18 +17,24 @@ logger = logging.getLogger(__name__)
 MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0/nexfi")
 MONGO_DB_NAME = "nexfi"
 
+# Initialize client without testing connection
 try:
     client = pymongo.MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=50000,
-        connectTimeoutMS=100000,
-        maxPoolSize=50
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        maxPoolSize=1,  # Important for serverless
+        tls=True,
+        tlsAllowInvalidCertificates=False
     )
     db = client[MONGO_DB_NAME]
-    client.server_info()
-    logger.info("✓ Successfully connected to MongoDB")
+    logger.info("✓ MongoDB client initialized")
+    
+    # DON'T TEST CONNECTION HERE - Remove this line:
+    # client.server_info()  ← DELETE THIS
+    
 except Exception as e:
-    logger.error(f"✗ Failed to connect to MongoDB: {e}")
+    logger.error(f"✗ Failed to initialize MongoDB client: {e}")
     raise
 
 # Collections
