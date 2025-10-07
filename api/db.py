@@ -6,8 +6,6 @@ import bcrypt
 import logging
 from dotenv import load_dotenv
 
-#mongodb+srv://pius:pius7890@cluster0.kjfmyxe.mongodb.net/
-#mongodb+srv://pius:<db_password>@cluster0.kjfmyxe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
 load_dotenv()
 
 # Configure logging
