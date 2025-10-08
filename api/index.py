@@ -11,7 +11,7 @@ CORS(app,
      resources={r"/api/*": {"origins": "*"}},
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     supports_credentials=True
+     supports_credentials=False
 )
 
 # Configure logging
@@ -44,6 +44,7 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
+
 app = Flask(__name__)
 
 @app.route('/')
