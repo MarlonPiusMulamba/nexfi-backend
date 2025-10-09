@@ -21,8 +21,8 @@ MONGO_DB_NAME = "nexfi"
 try:
     client = pymongo.MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=5000,
-        connectTimeoutMS=10000,
+        serverSelectionTimeoutMS=500000,
+        connectTimeoutMS=1000000,
         maxPoolSize=1,  # Important for serverless
         tls=True,
         tlsAllowInvalidCertificates=False
