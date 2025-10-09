@@ -21,9 +21,14 @@ MONGO_DB_NAME = "nexfi"
 try:
     client = pymongo.MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=500000,
-        connectTimeoutMS=1000000,
-        maxPoolSize=1,  
+        serverSelectionTimeoutMS=5000,  # Reduced from 500000
+        connectTimeoutMS=10000,         # Reduced from 1000000
+        socketTimeoutMS=10000,          # Added
+        maxPoolSize=50,                 # Increased from 1
+        minPoolSize=10,                 # Added
+        maxIdleTimeMS=45000,           # Added
+        retryWrites=True,
+        retryReads=True,                # Added
         tls=True,
         tlsAllowInvalidCertificates=False
     )
@@ -168,10 +173,10 @@ def get_feed(user_id, limit=20):
         logger.info(f"Fetching global feed (limit: {limit})")
 
         user_obj_id = ObjectId(user_id)
-        if not users.find_one({"_id": user_obj_id}):
+        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):  # Only check if user exists
             return [], "Invalid user_id"
 
-        # Use indexed sort and lightweight projection
+        # Optimized pipeline with better indexing
         pipeline = [
             {"$sort": {"timestamp": -1}},
             {"$limit": limit},
@@ -180,34 +185,26 @@ def get_feed(user_id, limit=20):
                     "from": "users",
                     "localField": "user_id",
                     "foreignField": "_id",
-                    "as": "user_info",
-                    "pipeline": [
-                        {"$project": {"username": 1, "profile_pic": 1, "_id": 0}}
-                    ]
+                    "as": "user_info"
                 }
             },
-            {"$unwind": "$user_info"},
+            {"$unwind": {"path": "$user_info", "preserveNullAndEmptyArrays": False}},
             {
                 "$project": {
                     "post_id": {"$toString": "$_id"},
                     "user_id": {"$toString": "$user_id"},
                     "content": 1,
-                    "likes": 1,
-                    "comments_count": 1,
-                    "timestamp": 1,
+                    "image": {"$ifNull": ["$image", ""]},
+                    "likes": {"$ifNull": ["$likes", 0]},
+                    "comments_count": {"$ifNull": ["$comments_count", 0]},
+                    "timestamp": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$timestamp"}},
                     "username": "$user_info.username",
-                    "profile_pic": "$user_info.profile_pic"
+                    "profile_pic": {"$ifNull": ["$user_info.profile_pic", ""]}
                 }
             }
         ]
 
-        feed_posts = list(posts.aggregate(pipeline))
-
-        for post in feed_posts:
-            if isinstance(post.get("timestamp"), datetime):
-                post["timestamp"] = post["timestamp"].isoformat()
-            post.pop("_id", None)
-            post.setdefault("profile_pic", "")
+        feed_posts = list(posts.aggregate(pipeline, allowDiskUse=True))
 
         logger.info(f"✓ Returned {len(feed_posts)} posts")
         return feed_posts, None

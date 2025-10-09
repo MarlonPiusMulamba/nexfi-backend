@@ -11,5 +11,14 @@
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ]
+  ],
+  "env": {
+    "MONGO_URI": "@mongo_uri"
+  },
+  "functions": {
+    "index.py": {
+      "maxDuration": 10
+    }
+  }
+
 }

@@ -142,16 +142,24 @@ def feed():
                 "error": "No user_id provided"
             }), 400
         
-        # Simple call - just user_id and limit
-        posts_list, error = db.get_feed(user_id, limit=100)
+        limit = data.get('limit', 50)  # Reduced default from 100
+        
+        # Add response compression hint
+        posts_list, error = db.get_feed(user_id, limit=limit)
+        
+        if error:
+            logger.error(f"❌ Feed error: {error}")
+            return jsonify({"posts": [], "error": error}), 500
         
         logger.info(f"✅ Feed: {len(posts_list)} posts returned to user {user_id}")
         
-        return jsonify({"posts": posts_list, "error": error})
+        response = jsonify({"posts": posts_list, "error": None})
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
         
     except Exception as e:
         logger.error(f"❌ Feed error: {str(e)}", exc_info=True)
-        return jsonify({"posts": [], "error": str(e)}), 500
+        return jsonify({"posts": [], "error": "Server error"}), 500
 
 
 @app.route('/api/follow', methods=['POST'])
