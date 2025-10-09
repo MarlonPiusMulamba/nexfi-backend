@@ -39,7 +39,7 @@ def after_request(response):
 
 @app.route('/')
 def home():
-    return jsonify({"message": "NexFi Backend API is running 🚀"})
+    return jsonify({"message": "NexFi Backend API is running"})
 
 
 
@@ -99,7 +99,7 @@ def login():
         return jsonify({
             "success": bool(user_id), 
             "user_id": user_id,
-            "username": username,  # Return actual username
+            "username": username,  
             "message": message
         })
         
@@ -261,9 +261,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ... [Keep all your existing routes] ...
 
-# NEW MESSAGING ROUTES - Add these:
+
+# NEW MESSAGING ROUTES:
 
 @app.route('/api/conversations', methods=['GET'])
 def get_conversations():

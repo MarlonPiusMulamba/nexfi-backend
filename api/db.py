@@ -23,15 +23,12 @@ try:
         MONGO_URI,
         serverSelectionTimeoutMS=500000,
         connectTimeoutMS=1000000,
-        maxPoolSize=1,  # Important for serverless
+        maxPoolSize=1,  
         tls=True,
         tlsAllowInvalidCertificates=False
     )
     db = client[MONGO_DB_NAME]
     logger.info("✓ MongoDB client initialized")
-    
-    # DON'T TEST CONNECTION HERE - Remove this line:
-    # client.server_info()  ← DELETE THIS
     
 except Exception as e:
     logger.error(f"✗ Failed to initialize MongoDB client: {e}")
@@ -167,10 +164,6 @@ def create_post(user_id, content, image=None):
 
 
 def get_feed(user_id, limit=50):
-    """
-    Get global feed - ALL posts from ALL users
-    Simple, fast, no filtering
-    """
     try:
         logger.info(f"Fetching global feed (limit: {limit})")
         
