@@ -163,39 +163,35 @@ def create_post(user_id, content, image=None):
         return False, str(e)
 
 
-def get_feed(user_id, limit=50):
+def get_feed(user_id, limit=20):
     try:
         logger.info(f"Fetching global feed (limit: {limit})")
-        
-        # Validate user exists
+
         user_obj_id = ObjectId(user_id)
         if not users.find_one({"_id": user_obj_id}):
             return [], "Invalid user_id"
-        
-        # Use aggregation pipeline for best performance
+
+        # Use indexed sort and lightweight projection
         pipeline = [
-            # Sort by timestamp (newest first)
             {"$sort": {"timestamp": -1}},
-            # Limit results
             {"$limit": limit},
-            # Join with users collection
             {
                 "$lookup": {
                     "from": "users",
                     "localField": "user_id",
                     "foreignField": "_id",
-                    "as": "user_info"
+                    "as": "user_info",
+                    "pipeline": [
+                        {"$project": {"username": 1, "profile_pic": 1, "_id": 0}}
+                    ]
                 }
             },
-            # Unwind user info
             {"$unwind": "$user_info"},
-            # Project only needed fields
             {
                 "$project": {
                     "post_id": {"$toString": "$_id"},
                     "user_id": {"$toString": "$user_id"},
                     "content": 1,
-                    "image": 1,
                     "likes": 1,
                     "comments_count": 1,
                     "timestamp": 1,
@@ -204,23 +200,22 @@ def get_feed(user_id, limit=50):
                 }
             }
         ]
-        
+
         feed_posts = list(posts.aggregate(pipeline))
-        
-        # Convert timestamp to ISO format
+
         for post in feed_posts:
-            post['timestamp'] = post['timestamp'].isoformat()
-            post.pop('_id', None)
-            # Ensure profile_pic is string
-            if not post.get('profile_pic'):
-                post['profile_pic'] = ""
-        
+            if isinstance(post.get("timestamp"), datetime):
+                post["timestamp"] = post["timestamp"].isoformat()
+            post.pop("_id", None)
+            post.setdefault("profile_pic", "")
+
         logger.info(f"✓ Returned {len(feed_posts)} posts")
         return feed_posts, None
-        
+
     except Exception as e:
         logger.error(f"✗ Feed error: {e}", exc_info=True)
         return [], str(e)
+
 
 
 def follow_user(follower_id, following_username):
