@@ -7,12 +7,21 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 app = Flask(__name__)
+
 CORS(app, 
-     resources={r"/api/*": {"origins": "*"}},
-     allow_headers=["Content-Type", "Authorization"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     supports_credentials=False
+     resources={r"/api/*": {
+         "origins": ["http://localhost:*", "http://127.0.0.1:*", "*"],
+         "allow_headers": ["Content-Type", "Authorization"],
+         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+     }}
 )
+# CORS(app, 
+#      resources={r"/api/*": {"origins": "*",  }},
+     
+#      allow_headers=["Content-Type", "Authorization"],
+#      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+#      supports_credentials=False
+# )
 
 # Configure logging
 logging.basicConfig(
