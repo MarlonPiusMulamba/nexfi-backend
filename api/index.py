@@ -48,7 +48,7 @@ def after_request(response):
 
 @app.route('/')
 def home():
-    return jsonify({"message": "NexFi Backend API is running"})
+    return jsonify({"message": "NexFi Backend API is running on pythonanywhere"})
 
 
 
@@ -140,7 +140,6 @@ def post():
 
 @app.route('/api/feed', methods=['POST'])
 def feed():
-    """Get global feed - ALL posts from ALL users"""
     try:
         data = request.json
         user_id = data.get('user_id')
