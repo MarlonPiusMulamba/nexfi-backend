@@ -6,7 +6,6 @@ import bcrypt
 import logging
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 # Configure logging
@@ -14,23 +13,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB Atlas Configuration
-MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0/nexfi")
+MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0")
 MONGO_DB_NAME = "nexfi"
 
-# Initialize client without testing connection
+# Optimized connection settings
 try:
     client = pymongo.MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=5000,  # Reduced from 500000
-        connectTimeoutMS=10000,         # Reduced from 1000000
-        socketTimeoutMS=10000,          # Added
-        maxPoolSize=50,                 # Increased from 1
-        minPoolSize=10,                 # Added
-        maxIdleTimeMS=45000,           # Added
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=45000,
+        maxPoolSize=100,
+        minPoolSize=20,
+        maxIdleTimeMS=45000,
         retryWrites=True,
-        retryReads=True,                # Added
+        retryReads=True,
         tls=True,
-        tlsAllowInvalidCertificates=False
+        tlsAllowInvalidCertificates=False,
+        compressors='snappy,zlib',
+        maxConnecting=10
     )
     db = client[MONGO_DB_NAME]
     logger.info("✓ MongoDB client initialized")
@@ -45,40 +46,39 @@ posts = db['posts']
 follows = db['follows']
 messages = db['messages']
 
-# Create indexes for faster queries
+# CRITICAL: Create compound indexes for better query performance
 try:
-    # First, clean up any users with null usernames
-    result = users.delete_many({"username": None})
+    # Clean up bad data first
+    result = users.delete_many({"username": {"$in": [None, ""]}})
     if result.deleted_count > 0:
-        logger.warning(f"⚠️  Cleaned up {result.deleted_count} users with null usernames")
+        logger.warning(f"⚠️  Cleaned up {result.deleted_count} invalid users")
     
-    # Also clean up users with empty usernames
-    result = users.delete_many({"username": ""})
-    if result.deleted_count > 0:
-        logger.warning(f"⚠️  Cleaned up {result.deleted_count} users with empty usernames")
-    
-    # Drop existing indexes if they exist (to recreate them properly)
+    # Drop and recreate indexes
     try:
         users.drop_index("username_1")
-        logger.info("Dropped old username index")
-    except:
-        pass
-    
-    try:
         users.drop_index("email_1")
-        logger.info("Dropped old email index")
     except:
         pass
     
-    # Now create the indexes
-    posts.create_index([("timestamp", -1)])
-    posts.create_index([("user_id", 1)])
+    # User indexes
     users.create_index([("username", 1)], unique=True, sparse=False)
     users.create_index([("email", 1)], unique=True, sparse=False)
+    
+    # CRITICAL POST INDEXES
+    posts.create_index([("timestamp", -1)])
+    posts.create_index([("user_id", 1)])
+    posts.create_index([("user_id", 1), ("timestamp", -1)])
+    
+    # Follow indexes
     follows.create_index([("follower_id", 1)])
     follows.create_index([("following_id", 1)])
+    follows.create_index([("follower_id", 1), ("following_id", 1)], unique=True)
     
-    logger.info("✓ Database indexes created successfully")
+    # Message indexes
+    messages.create_index([("from_user_id", 1), ("to_user_id", 1), ("timestamp", -1)])
+    messages.create_index([("to_user_id", 1), ("read", 1)])
+    
+    logger.info("✓ All database indexes created successfully")
 except Exception as e:
     logger.warning(f"⚠️  Index creation warning: {e}")
 
@@ -106,7 +106,7 @@ def register_user(username, password, date_of_birth, gender, email, profile_pic=
             "gender": gender,
             "email": email,
             "profile_pic": profile_pic if profile_pic else "",
-            "created_at": datetime.datetime.now()
+            "created_at": datetime.datetime.utcnow()
         }
         
         result = users.insert_one(user_data)
@@ -139,9 +139,10 @@ def login_user(username, password):
 
 
 def create_post(user_id, content, image=None):
-    """Create a new post"""
+    """Create a new post - OPTIMIZED"""
     try:
-        if not users.find_one({"_id": ObjectId(user_id)}):
+        # Quick validation
+        if not users.find_one({"_id": ObjectId(user_id)}, {"_id": 1}):
             return False, "Invalid user_id"
         
         if not content and not image:
@@ -154,13 +155,13 @@ def create_post(user_id, content, image=None):
             "user_id": ObjectId(user_id),
             "content": content if content else "",
             "image": image if image else "",
-            "timestamp": datetime.datetime.now(),
+            "timestamp": datetime.datetime.utcnow(),
             "likes": 0,
             "comments_count": 0
         }
         
         result = posts.insert_one(post_data)
-        logger.info(f"✓ Post created by user {user_id}")
+        logger.info(f"✓ Post created by user {user_id}: {result.inserted_id}")
         
         return True, "Post created"
     except Exception as e:
@@ -168,15 +169,18 @@ def create_post(user_id, content, image=None):
         return False, str(e)
 
 
-def get_feed(user_id, limit=20):
+def get_feed(user_id, limit=50):
+    """Get feed posts - HEAVILY OPTIMIZED"""
     try:
-        logger.info(f"Fetching global feed (limit: {limit})")
-
+        logger.info(f"📡 Fetching feed for user {user_id} (limit: {limit})")
+        
         user_obj_id = ObjectId(user_id)
-        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):  # Only check if user exists
+        
+        # Quick user validation
+        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):
             return [], "Invalid user_id"
-
-        # Optimized pipeline with better indexing
+        
+        # OPTIMIZED PIPELINE
         pipeline = [
             {"$sort": {"timestamp": -1}},
             {"$limit": limit},
@@ -185,34 +189,94 @@ def get_feed(user_id, limit=20):
                     "from": "users",
                     "localField": "user_id",
                     "foreignField": "_id",
-                    "as": "user_info"
+                    "as": "user_info",
+                    "pipeline": [
+                        {
+                            "$project": {
+                                "username": 1,
+                                "profile_pic": 1
+                            }
+                        }
+                    ]
                 }
             },
             {"$unwind": {"path": "$user_info", "preserveNullAndEmptyArrays": False}},
             {
                 "$project": {
+                    "_id": 0,
                     "post_id": {"$toString": "$_id"},
                     "user_id": {"$toString": "$user_id"},
                     "content": 1,
                     "image": {"$ifNull": ["$image", ""]},
                     "likes": {"$ifNull": ["$likes", 0]},
                     "comments_count": {"$ifNull": ["$comments_count", 0]},
-                    "timestamp": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$timestamp"}},
+                    "timestamp": {
+                        "$dateToString": {
+                            "format": "%Y-%m-%dT%H:%M:%S.%LZ",
+                            "date": "$timestamp"
+                        }
+                    },
                     "username": "$user_info.username",
                     "profile_pic": {"$ifNull": ["$user_info.profile_pic", ""]}
                 }
             }
         ]
-
-        feed_posts = list(posts.aggregate(pipeline, allowDiskUse=True))
-
-        logger.info(f"✓ Returned {len(feed_posts)} posts")
+        
+        feed_posts = list(posts.aggregate(
+            pipeline,
+            allowDiskUse=True,
+            maxTimeMS=30000
+        ))
+        
+        logger.info(f"✅ Successfully returned {len(feed_posts)} posts")
         return feed_posts, None
-
+        
+    except pymongo.errors.ExecutionTimeout:
+        logger.error("❌ Feed query timeout")
+        return [], "Query timeout - please try again"
     except Exception as e:
-        logger.error(f"✗ Feed error: {e}", exc_info=True)
+        logger.error(f"❌ Feed error: {e}", exc_info=True)
         return [], str(e)
 
+
+def get_feed_simple(user_id, limit=50):
+    """Simplified feed - FALLBACK METHOD"""
+    try:
+        logger.info(f"📡 Using simple feed for user {user_id}")
+        
+        user_obj_id = ObjectId(user_id)
+        
+        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):
+            return [], "Invalid user_id"
+        
+        recent_posts = posts.find().sort("timestamp", -1).limit(limit)
+        
+        feed_posts = []
+        for post in recent_posts:
+            user = users.find_one(
+                {"_id": post["user_id"]},
+                {"username": 1, "profile_pic": 1}
+            )
+            
+            if user:
+                feed_posts.append({
+                    "post_id": str(post["_id"]),
+                    "user_id": str(post["user_id"]),
+                    "content": post.get("content", ""),
+                    "image": post.get("image", ""),
+                    "likes": post.get("likes", 0),
+                    "comments_count": post.get("comments_count", 0),
+                    "timestamp": post["timestamp"].isoformat(),
+                    "username": user["username"],
+                    "profile_pic": user.get("profile_pic", "")
+                })
+        
+        logger.info(f"✅ Simple method returned {len(feed_posts)} posts")
+        return feed_posts, None
+        
+    except Exception as e:
+        logger.error(f"❌ Simple feed error: {e}", exc_info=True)
+        return [], str(e)
 
 
 def follow_user(follower_id, following_username):
@@ -239,7 +303,7 @@ def follow_user(follower_id, following_username):
         follows.insert_one({
             "follower_id": ObjectId(follower_id),
             "following_id": following_id,
-            "created_at": datetime.datetime.now()
+            "created_at": datetime.datetime.utcnow()
         })
         
         logger.info(f"✓ User {follower_id} followed @{following_username}")
@@ -357,19 +421,9 @@ def get_user_profile(username):
         return None, str(e)
 
 
-
-try:
-    messages.create_index([("from_user_id", 1), ("to_user_id", 1), ("timestamp", -1)])
-    messages.create_index([("to_user_id", 1), ("read", 1)])
-    logger.info("✓ Message indexes created successfully")
-except Exception as e:
-    logger.warning(f"⚠️  Message index creation warning: {e}")
-
-
 def send_message(from_user_id, to_user_id, text, image=None):
     """Send a message from one user to another"""
     try:
-        # Validate both users exist
         from_user = users.find_one({"_id": ObjectId(from_user_id)})
         to_user = users.find_one({"_id": ObjectId(to_user_id)})
         
@@ -386,7 +440,7 @@ def send_message(from_user_id, to_user_id, text, image=None):
             "to_user_id": ObjectId(to_user_id),
             "text": text,
             "image": image if image else "",
-            "timestamp": datetime.datetime.now(),
+            "timestamp": datetime.datetime.utcnow(),
             "read": False
         }
         
@@ -407,13 +461,11 @@ def get_messages(user_id, other_user_id, limit=100):
         user_obj_id = ObjectId(user_id)
         other_obj_id = ObjectId(other_user_id)
         
-        # Validate both users exist
         if not users.find_one({"_id": user_obj_id}):
             return [], "Invalid user_id"
         if not users.find_one({"_id": other_obj_id}):
             return [], "Invalid other_user_id"
         
-        # Get messages between the two users
         pipeline = [
             {
                 "$match": {
@@ -439,12 +491,11 @@ def get_messages(user_id, other_user_id, limit=100):
         
         message_list = list(messages.aggregate(pipeline))
         
-        # Convert timestamp to ISO format
         for msg in message_list:
             msg['timestamp'] = msg['timestamp'].isoformat()
             msg.pop('_id', None)
         
-        logger.info(f"✓ Loaded {len(message_list)} messages between users")
+        logger.info(f"✓ Loaded {len(message_list)} messages")
         return message_list, None
         
     except Exception as e:
@@ -453,14 +504,13 @@ def get_messages(user_id, other_user_id, limit=100):
 
 
 def get_user_conversations(user_id):
-    """Get all conversations for a user with last message preview"""
+    """Get all conversations for a user"""
     try:
         user_obj_id = ObjectId(user_id)
         
         if not users.find_one({"_id": user_obj_id}):
             return [], "Invalid user_id"
         
-        # Aggregate to get last message for each conversation
         pipeline = [
             {
                 "$match": {
@@ -543,14 +593,13 @@ def get_user_conversations(user_id):
         
         conversations = list(messages.aggregate(pipeline))
         
-        # Convert timestamp to ISO format
         for conv in conversations:
             conv['last_message_time'] = conv['last_message_time'].isoformat()
             conv.pop('_id', None)
             if not conv.get('profile_pic'):
                 conv['profile_pic'] = ""
         
-        logger.info(f"✓ Loaded {len(conversations)} conversations for user {user_id}")
+        logger.info(f"✓ Loaded {len(conversations)} conversations")
         return conversations, None
         
     except Exception as e:
@@ -559,7 +608,7 @@ def get_user_conversations(user_id):
 
 
 def mark_messages_read(user_id, other_user_id):
-    """Mark all messages from other_user to user as read"""
+    """Mark messages as read"""
     try:
         result = messages.update_many(
             {
@@ -581,13 +630,11 @@ def mark_messages_read(user_id, other_user_id):
 def search_users_by_username(query, limit=20):
     """Search users by username"""
     try:
-        # Case-insensitive search
         users_list = list(users.find(
             {"username": {"$regex": query, "$options": "i"}},
             {"password": 0, "email": 0}
         ).limit(limit))
         
-        # Format results
         results = []
         for user in users_list:
             results.append({
