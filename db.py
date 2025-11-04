@@ -1,86 +1,146 @@
-import pymongo
-from bson.objectid import ObjectId
+import sqlite3
 import datetime
 import os
 import bcrypt
 import logging
-from dotenv import load_dotenv
-
-load_dotenv()
+import json
+from contextlib import contextmanager
+from threading import Lock
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# MongoDB Atlas Configuration
-MONGO_URI = os.environ.get('MONGO_URI', "mongodb+srv://marlon:pius7890@cluster0.kjfmyxe.mongodb.net/nexfi?retryWrites=true&w=majority&appName=Cluster0")
-MONGO_DB_NAME = "nexfi"
+# Database configuration
+DB_PATH = os.environ.get('DB_PATH', 'nexfi.db')
+DB_LOCK = Lock()
 
-# Optimized connection settings
-try:
-    client = pymongo.MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=5000,
-        connectTimeoutMS=10000,
-        socketTimeoutMS=45000,
-        maxPoolSize=100,
-        minPoolSize=20,
-        maxIdleTimeMS=45000,
-        retryWrites=True,
-        retryReads=True,
-        tls=True,
-        tlsAllowInvalidCertificates=False,
-        compressors='snappy,zlib',
-        maxConnecting=10
-    )
-    db = client[MONGO_DB_NAME]
-    logger.info("✓ MongoDB client initialized")
-    
-except Exception as e:
-    logger.error(f"✗ Failed to initialize MongoDB client: {e}")
-    raise
+# User cache
+USER_CACHE = {}
+CACHE_TTL = 300
 
-# Collections
-users = db['users']
-posts = db['posts']
-follows = db['follows']
-messages = db['messages']
 
-# CRITICAL: Create compound indexes for better query performance
-try:
-    # Clean up bad data first
-    result = users.delete_many({"username": {"$in": [None, ""]}})
-    if result.deleted_count > 0:
-        logger.warning(f"⚠️  Cleaned up {result.deleted_count} invalid users")
-    
-    # Drop and recreate indexes
+@contextmanager
+def get_db():
+    """Context manager for database connections"""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
     try:
-        users.drop_index("username_1")
-        users.drop_index("email_1")
-    except:
-        pass
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def init_database():
+    """Initialize database with tables and indexes"""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    date_of_birth TEXT,
+                    gender TEXT,
+                    profile_pic TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Posts table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    content TEXT,
+                    image TEXT,
+                    likes INTEGER DEFAULT 0,
+                    comments_count INTEGER DEFAULT 0,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Follows table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS follows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    follower_id INTEGER NOT NULL,
+                    following_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(follower_id, following_id),
+                    FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Messages table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_user_id INTEGER NOT NULL,
+                    to_user_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    image TEXT,
+                    read INTEGER DEFAULT 0,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (from_user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (to_user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Create indexes for performance
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_posts_timestamp ON posts(timestamp DESC)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)')
+            
+            conn.commit()
+            logger.info(f"✓ SQLite database initialized at {DB_PATH}")
+            
+    except Exception as e:
+        logger.error(f"✗ Database initialization error: {e}")
+        raise
+
+
+# Initialize database on module load
+init_database()
+
+
+def get_cached_user(user_id):
+    """Get user from cache or database"""
+    cache_key = str(user_id)
+    now = datetime.datetime.utcnow().timestamp()
     
-    # User indexes
-    users.create_index([("username", 1)], unique=True, sparse=False)
-    users.create_index([("email", 1)], unique=True, sparse=False)
+    if cache_key in USER_CACHE:
+        data, timestamp = USER_CACHE[cache_key]
+        if now - timestamp < CACHE_TTL:
+            return data
     
-    # CRITICAL POST INDEXES
-    posts.create_index([("timestamp", -1)])
-    posts.create_index([("user_id", 1)])
-    posts.create_index([("user_id", 1), ("timestamp", -1)])
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, username, profile_pic FROM users WHERE id = ?', (user_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            user = dict(row)
+            USER_CACHE[cache_key] = (user, now)
+            return user
     
-    # Follow indexes
-    follows.create_index([("follower_id", 1)])
-    follows.create_index([("following_id", 1)])
-    follows.create_index([("follower_id", 1), ("following_id", 1)], unique=True)
-    
-    # Message indexes
-    messages.create_index([("from_user_id", 1), ("to_user_id", 1), ("timestamp", -1)])
-    messages.create_index([("to_user_id", 1), ("read", 1)])
-    
-    logger.info("✓ All database indexes created successfully")
-except Exception as e:
-    logger.warning(f"⚠️  Index creation warning: {e}")
+    return None
 
 
 def register_user(username, password, date_of_birth, gender, email, profile_pic=None):
@@ -88,227 +148,189 @@ def register_user(username, password, date_of_birth, gender, email, profile_pic=
     try:
         logger.info(f"Registering user: {username}")
         
-        if users.find_one({"username": username}):
-            return False, "Username already exists", None
-        if users.find_one({"email": email}):
-            return False, "Email already exists", None
+        # Validation
         if len(username) < 3:
             return False, "Username must be at least 3 characters", None
         if len(password) < 6:
             return False, "Password must be at least 6 characters", None
         
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        
-        user_data = {
-            "username": username,
-            "password": hashed_password.decode('utf-8'),
-            "date_of_birth": date_of_birth,
-            "gender": gender,
-            "email": email,
-            "profile_pic": profile_pic if profile_pic else "",
-            "created_at": datetime.datetime.utcnow()
-        }
-        
-        result = users.insert_one(user_data)
-        user_id = str(result.inserted_id)
-        logger.info(f"✓ User registered: {username} (ID: {user_id})")
-        
-        return True, "User registered successfully", user_id
+        # Check if username or email exists
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+            if cursor.fetchone():
+                return False, "Username already exists", None
+            
+            cursor.execute('SELECT id FROM users WHERE email = ?', (email,))
+            if cursor.fetchone():
+                return False, "Email already exists", None
+            
+            # Hash password
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            
+            # Insert user
+            cursor.execute('''
+                INSERT INTO users (username, password, email, date_of_birth, gender, profile_pic)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (username, hashed_password.decode('utf-8'), email, date_of_birth, gender, profile_pic or ''))
+            
+            user_id = cursor.lastrowid
+            conn.commit()
+            
+            logger.info(f"✓ User registered: {username} (ID: {user_id})")
+            return True, "User registered successfully", str(user_id)
+            
     except Exception as e:
-        logger.error(f"✗ Registration error: {e}", exc_info=True)
+        logger.error(f"✗ Registration error: {e}")
         return False, str(e), None
 
 
 def login_user(username, password):
     """Login user"""
     try:
-        user = users.find_one({"$or": [{"username": username}, {"email": username}]})
-        
-        if not user:
-            return None, "Invalid username/email or password"
-        
-        if bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
-            logger.info(f"✓ Login successful: {username}")
-            return str(user['_id']), "Login successful"
-        else:
-            return None, "Invalid username/email or password"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, username, password FROM users 
+                WHERE username = ? OR email = ?
+            ''', (username, username))
             
+            user = cursor.fetchone()
+            
+            if not user:
+                return None, "Invalid username/email or password"
+            
+            user_dict = dict(user)
+            
+            if bcrypt.checkpw(password.encode('utf-8'), user_dict['password'].encode('utf-8')):
+                logger.info(f"✓ Login successful: {username}")
+                return str(user_dict['id']), "Login successful"
+            else:
+                return None, "Invalid username/email or password"
+                
     except Exception as e:
         logger.error(f"✗ Login error: {e}")
         return None, str(e)
 
 
 def create_post(user_id, content, image=None):
-    """Create a new post - OPTIMIZED"""
+    """Create a new post"""
     try:
-        # Quick validation
-        if not users.find_one({"_id": ObjectId(user_id)}, {"_id": 1}):
-            return False, "Invalid user_id"
-        
         if not content and not image:
             return False, "Post must have content or an image"
         
         if content and len(content) > 280:
             return False, "Post content must be 1-280 characters"
         
-        post_data = {
-            "user_id": ObjectId(user_id),
-            "content": content if content else "",
-            "image": image if image else "",
-            "timestamp": datetime.datetime.utcnow(),
-            "likes": 0,
-            "comments_count": 0
-        }
-        
-        result = posts.insert_one(post_data)
-        logger.info(f"✓ Post created by user {user_id}: {result.inserted_id}")
-        
-        return True, "Post created"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO posts (user_id, content, image)
+                VALUES (?, ?, ?)
+            ''', (int(user_id), content or '', image or ''))
+            
+            conn.commit()
+            logger.info(f"✓ Post created by user {user_id}")
+            return True, "Post created"
+            
     except Exception as e:
         logger.error(f"✗ Post creation error: {e}")
         return False, str(e)
 
 
-def get_feed(user_id, limit=50):
-    """Get feed posts - HEAVILY OPTIMIZED"""
+def get_feed(user_id, limit=20):
+    """Get feed posts"""
     try:
-        logger.info(f"📡 Fetching feed for user {user_id} (limit: {limit})")
+        logger.info(f"⚡ Fetching feed (limit: {limit})")
         
-        user_obj_id = ObjectId(user_id)
-        
-        # Quick user validation
-        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):
-            return [], "Invalid user_id"
-        
-        # OPTIMIZED PIPELINE
-        pipeline = [
-            {"$sort": {"timestamp": -1}},
-            {"$limit": limit},
-            {
-                "$lookup": {
-                    "from": "users",
-                    "localField": "user_id",
-                    "foreignField": "_id",
-                    "as": "user_info",
-                    "pipeline": [
-                        {
-                            "$project": {
-                                "username": 1,
-                                "profile_pic": 1
-                            }
-                        }
-                    ]
-                }
-            },
-            {"$unwind": {"path": "$user_info", "preserveNullAndEmptyArrays": False}},
-            {
-                "$project": {
-                    "_id": 0,
-                    "post_id": {"$toString": "$_id"},
-                    "user_id": {"$toString": "$user_id"},
-                    "content": 1,
-                    "image": {"$ifNull": ["$image", ""]},
-                    "likes": {"$ifNull": ["$likes", 0]},
-                    "comments_count": {"$ifNull": ["$comments_count", 0]},
-                    "timestamp": {
-                        "$dateToString": {
-                            "format": "%Y-%m-%dT%H:%M:%S.%LZ",
-                            "date": "$timestamp"
-                        }
-                    },
-                    "username": "$user_info.username",
-                    "profile_pic": {"$ifNull": ["$user_info.profile_pic", ""]}
-                }
-            }
-        ]
-        
-        feed_posts = list(posts.aggregate(
-            pipeline,
-            allowDiskUse=True,
-            maxTimeMS=30000
-        ))
-        
-        logger.info(f"✅ Successfully returned {len(feed_posts)} posts")
-        return feed_posts, None
-        
-    except pymongo.errors.ExecutionTimeout:
-        logger.error("❌ Feed query timeout")
-        return [], "Query timeout - please try again"
-    except Exception as e:
-        logger.error(f"❌ Feed error: {e}", exc_info=True)
-        return [], str(e)
-
-
-def get_feed_simple(user_id, limit=50):
-    """Simplified feed - FALLBACK METHOD"""
-    try:
-        logger.info(f"📡 Using simple feed for user {user_id}")
-        
-        user_obj_id = ObjectId(user_id)
-        
-        if not users.find_one({"_id": user_obj_id}, {"_id": 1}):
-            return [], "Invalid user_id"
-        
-        recent_posts = posts.find().sort("timestamp", -1).limit(limit)
-        
-        feed_posts = []
-        for post in recent_posts:
-            user = users.find_one(
-                {"_id": post["user_id"]},
-                {"username": 1, "profile_pic": 1}
-            )
+        with get_db() as conn:
+            cursor = conn.cursor()
             
-            if user:
+            # Get posts with user information
+            cursor.execute('''
+                SELECT 
+                    p.id as post_id,
+                    p.user_id,
+                    p.content,
+                    p.image,
+                    p.likes,
+                    p.comments_count,
+                    p.timestamp,
+                    u.username,
+                    u.profile_pic
+                FROM posts p
+                JOIN users u ON p.user_id = u.id
+                ORDER BY p.timestamp DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            posts = cursor.fetchall()
+            
+            feed_posts = []
+            for post in posts:
                 feed_posts.append({
-                    "post_id": str(post["_id"]),
-                    "user_id": str(post["user_id"]),
-                    "content": post.get("content", ""),
-                    "image": post.get("image", ""),
-                    "likes": post.get("likes", 0),
-                    "comments_count": post.get("comments_count", 0),
-                    "timestamp": post["timestamp"].isoformat(),
-                    "username": user["username"],
-                    "profile_pic": user.get("profile_pic", "")
+                    "post_id": str(post['post_id']),
+                    "user_id": str(post['user_id']),
+                    "content": post['content'] or '',
+                    "image": post['image'] or '',
+                    "likes": post['likes'],
+                    "comments_count": post['comments_count'],
+                    "timestamp": post['timestamp'],
+                    "username": post['username'],
+                    "profile_pic": post['profile_pic'] or ''
                 })
-        
-        logger.info(f"✅ Simple method returned {len(feed_posts)} posts")
-        return feed_posts, None
-        
+            
+            logger.info(f"✅ Returned {len(feed_posts)} posts")
+            return feed_posts, None
+            
     except Exception as e:
-        logger.error(f"❌ Simple feed error: {e}", exc_info=True)
+        logger.error(f"❌ Feed error: {e}")
         return [], str(e)
+
+
+def get_feed_simple(user_id, limit=20):
+    """Fallback feed method (same as primary for SQLite)"""
+    return get_feed(user_id, limit)
 
 
 def follow_user(follower_id, following_username):
     """Follow a user"""
     try:
-        following = users.find_one({"username": following_username})
-        
-        if not following:
-            return False, "User not found"
-        
-        following_id = following['_id']
-        
-        if str(follower_id) == str(following_id):
-            return False, "You cannot follow yourself"
-        
-        existing = follows.find_one({
-            "follower_id": ObjectId(follower_id),
-            "following_id": following_id
-        })
-        
-        if existing:
-            return False, "Already following this user"
-        
-        follows.insert_one({
-            "follower_id": ObjectId(follower_id),
-            "following_id": following_id,
-            "created_at": datetime.datetime.utcnow()
-        })
-        
-        logger.info(f"✓ User {follower_id} followed @{following_username}")
-        return True, f"Followed @{following_username}"
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get following user ID
+            cursor.execute('SELECT id FROM users WHERE username = ?', (following_username,))
+            following = cursor.fetchone()
+            
+            if not following:
+                return False, "User not found"
+            
+            following_id = following['id']
+            
+            if int(follower_id) == following_id:
+                return False, "You cannot follow yourself"
+            
+            # Check if already following
+            cursor.execute('''
+                SELECT id FROM follows 
+                WHERE follower_id = ? AND following_id = ?
+            ''', (int(follower_id), following_id))
+            
+            if cursor.fetchone():
+                return True, f"Already following @{following_username}"
+            
+            # Create follow relationship
+            cursor.execute('''
+                INSERT INTO follows (follower_id, following_id)
+                VALUES (?, ?)
+            ''', (int(follower_id), following_id))
+            
+            conn.commit()
+            logger.info(f"✓ User {follower_id} followed @{following_username}")
+            return True, f"Followed @{following_username}"
+            
     except Exception as e:
         logger.error(f"✗ Follow error: {e}")
         return False, str(e)
@@ -317,22 +339,31 @@ def follow_user(follower_id, following_username):
 def unfollow_user(follower_id, following_username):
     """Unfollow a user"""
     try:
-        following = users.find_one({"username": following_username})
-        
-        if not following:
-            return False, "User not found"
-        
-        result = follows.delete_one({
-            "follower_id": ObjectId(follower_id),
-            "following_id": following['_id']
-        })
-        
-        if result.deleted_count > 0:
-            logger.info(f"✓ User {follower_id} unfollowed @{following_username}")
-            return True, f"Unfollowed @{following_username}"
-        else:
-            return False, "You are not following this user"
+        with get_db() as conn:
+            cursor = conn.cursor()
             
+            # Get following user ID
+            cursor.execute('SELECT id FROM users WHERE username = ?', (following_username,))
+            following = cursor.fetchone()
+            
+            if not following:
+                return False, "User not found"
+            
+            following_id = following['id']
+            
+            # Delete follow relationship
+            cursor.execute('''
+                DELETE FROM follows 
+                WHERE follower_id = ? AND following_id = ?
+            ''', (int(follower_id), following_id))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"✓ User {follower_id} unfollowed @{following_username}")
+                return True, f"Unfollowed @{following_username}"
+            else:
+                return False, "You are not following this user"
+                
     except Exception as e:
         logger.error(f"✗ Unfollow error: {e}")
         return False, str(e)
@@ -341,21 +372,16 @@ def unfollow_user(follower_id, following_username):
 def like_post(post_id, increment=True):
     """Like or unlike a post"""
     try:
-        if increment:
-            result = posts.update_one(
-                {"_id": ObjectId(post_id)},
-                {"$inc": {"likes": 1}}
-            )
-        else:
-            result = posts.update_one(
-                {"_id": ObjectId(post_id)},
-                {"$inc": {"likes": -1}}
-            )
-        
-        if result.modified_count > 0:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            if increment:
+                cursor.execute('UPDATE posts SET likes = likes + 1 WHERE id = ?', (int(post_id),))
+            else:
+                cursor.execute('UPDATE posts SET likes = MAX(0, likes - 1) WHERE id = ?', (int(post_id),))
+            
+            conn.commit()
             return True, "Like updated"
-        else:
-            return False, "Post not found"
             
     except Exception as e:
         logger.error(f"✗ Like error: {e}")
@@ -365,22 +391,20 @@ def like_post(post_id, increment=True):
 def delete_post(post_id, user_id):
     """Delete a post"""
     try:
-        post = posts.find_one({"_id": ObjectId(post_id)})
-        
-        if not post:
-            return False, "Post not found"
-        
-        if str(post['user_id']) != user_id:
-            return False, "You can only delete your own posts"
-        
-        result = posts.delete_one({"_id": ObjectId(post_id)})
-        
-        if result.deleted_count > 0:
-            logger.info(f"✓ Post {post_id} deleted")
-            return True, "Post deleted successfully"
-        else:
-            return False, "Failed to delete post"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM posts 
+                WHERE id = ? AND user_id = ?
+            ''', (int(post_id), int(user_id)))
             
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"✓ Post {post_id} deleted")
+                return True, "Post deleted successfully"
+            else:
+                return False, "Post not found or unauthorized"
+                
     except Exception as e:
         logger.error(f"✗ Delete error: {e}")
         return False, str(e)
@@ -389,239 +413,191 @@ def delete_post(post_id, user_id):
 def get_user_profile(username):
     """Get user profile information"""
     try:
-        user = users.find_one(
-            {"username": username},
-            {"password": 0}
-        )
-        
-        if not user:
-            return None, "User not found"
-        
-        followers_count = follows.count_documents({"following_id": user['_id']})
-        following_count = follows.count_documents({"follower_id": user['_id']})
-        posts_count = posts.count_documents({"user_id": user['_id']})
-        
-        profile = {
-            "user_id": str(user['_id']),
-            "username": user['username'],
-            "email": user['email'],
-            "profile_pic": user.get('profile_pic', ''),
-            "date_of_birth": user.get('date_of_birth', ''),
-            "gender": user.get('gender', ''),
-            "followers_count": followers_count,
-            "following_count": following_count,
-            "posts_count": posts_count,
-            "created_at": user.get('created_at', '').isoformat() if user.get('created_at') else ''
-        }
-        
-        return profile, None
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get user
+            cursor.execute('''
+                SELECT id, username, email, profile_pic, date_of_birth, gender, created_at
+                FROM users WHERE username = ?
+            ''', (username,))
+            
+            user = cursor.fetchone()
+            
+            if not user:
+                return None, "User not found"
+            
+            user_dict = dict(user)
+            
+            # Get counts
+            cursor.execute('SELECT COUNT(*) as count FROM follows WHERE following_id = ?', (user_dict['id'],))
+            followers_count = cursor.fetchone()['count']
+            
+            cursor.execute('SELECT COUNT(*) as count FROM follows WHERE follower_id = ?', (user_dict['id'],))
+            following_count = cursor.fetchone()['count']
+            
+            cursor.execute('SELECT COUNT(*) as count FROM posts WHERE user_id = ?', (user_dict['id'],))
+            posts_count = cursor.fetchone()['count']
+            
+            profile = {
+                "user_id": str(user_dict['id']),
+                "username": user_dict['username'],
+                "email": user_dict['email'],
+                "profile_pic": user_dict['profile_pic'] or '',
+                "date_of_birth": user_dict['date_of_birth'] or '',
+                "gender": user_dict['gender'] or '',
+                "followers_count": followers_count,
+                "following_count": following_count,
+                "posts_count": posts_count,
+                "created_at": user_dict['created_at'] or ''
+            }
+            
+            return profile, None
+            
     except Exception as e:
         logger.error(f"✗ Profile error: {e}")
         return None, str(e)
 
 
 def send_message(from_user_id, to_user_id, text, image=None):
-    """Send a message from one user to another"""
+    """Send a message"""
     try:
-        from_user = users.find_one({"_id": ObjectId(from_user_id)})
-        to_user = users.find_one({"_id": ObjectId(to_user_id)})
-        
-        if not from_user:
-            return False, "Sender not found", None
-        if not to_user:
-            return False, "Recipient not found", None
-        
         if from_user_id == to_user_id:
             return False, "Cannot send message to yourself", None
         
-        message_data = {
-            "from_user_id": ObjectId(from_user_id),
-            "to_user_id": ObjectId(to_user_id),
-            "text": text,
-            "image": image if image else "",
-            "timestamp": datetime.datetime.utcnow(),
-            "read": False
-        }
-        
-        result = messages.insert_one(message_data)
-        message_id = str(result.inserted_id)
-        
-        logger.info(f"✓ Message sent from {from_user_id} to {to_user_id}")
-        return True, "Message sent", message_id
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO messages (from_user_id, to_user_id, text, image)
+                VALUES (?, ?, ?, ?)
+            ''', (int(from_user_id), int(to_user_id), text, image or ''))
+            
+            message_id = cursor.lastrowid
+            conn.commit()
+            
+            logger.info(f"✓ Message sent from {from_user_id} to {to_user_id}")
+            return True, "Message sent", str(message_id)
+            
     except Exception as e:
-        logger.error(f"✗ Send message error: {e}", exc_info=True)
+        logger.error(f"✗ Send message error: {e}")
         return False, str(e), None
 
 
 def get_messages(user_id, other_user_id, limit=100):
     """Get messages between two users"""
     try:
-        user_obj_id = ObjectId(user_id)
-        other_obj_id = ObjectId(other_user_id)
-        
-        if not users.find_one({"_id": user_obj_id}):
-            return [], "Invalid user_id"
-        if not users.find_one({"_id": other_obj_id}):
-            return [], "Invalid other_user_id"
-        
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"from_user_id": user_obj_id, "to_user_id": other_obj_id},
-                        {"from_user_id": other_obj_id, "to_user_id": user_obj_id}
-                    ]
-                }
-            },
-            {"$sort": {"timestamp": 1}},
-            {"$limit": limit},
-            {
-                "$project": {
-                    "id": {"$toString": "$_id"},
-                    "text": 1,
-                    "image": 1,
-                    "timestamp": 1,
-                    "read": 1,
-                    "sent_by_me": {"$eq": ["$from_user_id", user_obj_id]}
-                }
-            }
-        ]
-        
-        message_list = list(messages.aggregate(pipeline))
-        
-        for msg in message_list:
-            msg['timestamp'] = msg['timestamp'].isoformat()
-            msg.pop('_id', None)
-        
-        logger.info(f"✓ Loaded {len(message_list)} messages")
-        return message_list, None
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, from_user_id, text, image, timestamp, read
+                FROM messages
+                WHERE (from_user_id = ? AND to_user_id = ?)
+                   OR (from_user_id = ? AND to_user_id = ?)
+                ORDER BY timestamp ASC
+                LIMIT ?
+            ''', (int(user_id), int(other_user_id), int(other_user_id), int(user_id), limit))
+            
+            messages = cursor.fetchall()
+            
+            message_list = []
+            for msg in messages:
+                message_list.append({
+                    "id": str(msg['id']),
+                    "text": msg['text'],
+                    "image": msg['image'] or '',
+                    "timestamp": msg['timestamp'],
+                    "read": bool(msg['read']),
+                    "sent_by_me": msg['from_user_id'] == int(user_id)
+                })
+            
+            logger.info(f"✓ Loaded {len(message_list)} messages")
+            return message_list, None
+            
     except Exception as e:
-        logger.error(f"✗ Get messages error: {e}", exc_info=True)
+        logger.error(f"✗ Get messages error: {e}")
         return [], str(e)
 
 
 def get_user_conversations(user_id):
     """Get all conversations for a user"""
     try:
-        user_obj_id = ObjectId(user_id)
-        
-        if not users.find_one({"_id": user_obj_id}):
-            return [], "Invalid user_id"
-        
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"from_user_id": user_obj_id},
-                        {"to_user_id": user_obj_id}
-                    ]
-                }
-            },
-            {"$sort": {"timestamp": -1}},
-            {
-                "$group": {
-                    "_id": {
-                        "$cond": [
-                            {"$eq": ["$from_user_id", user_obj_id]},
-                            "$to_user_id",
-                            "$from_user_id"
-                        ]
-                    },
-                    "last_message": {"$first": "$text"},
-                    "last_message_time": {"$first": "$timestamp"},
-                    "last_message_image": {"$first": "$image"},
-                    "last_message_sent_by_me": {"$first": {"$eq": ["$from_user_id", user_obj_id]}},
-                    "last_message_read": {"$first": "$read"}
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "users",
-                    "localField": "_id",
-                    "foreignField": "_id",
-                    "as": "user_info"
-                }
-            },
-            {"$unwind": "$user_info"},
-            {
-                "$lookup": {
-                    "from": "messages",
-                    "let": {"other_id": "$_id"},
-                    "pipeline": [
-                        {
-                            "$match": {
-                                "$expr": {
-                                    "$and": [
-                                        {"$eq": ["$from_user_id", "$$other_id"]},
-                                        {"$eq": ["$to_user_id", user_obj_id]},
-                                        {"$eq": ["$read", False]}
-                                    ]
-                                }
-                            }
-                        },
-                        {"$count": "count"}
-                    ],
-                    "as": "unread"
-                }
-            },
-            {
-                "$project": {
-                    "user_id": {"$toString": "$_id"},
-                    "username": "$user_info.username",
-                    "profile_pic": "$user_info.profile_pic",
-                    "last_message": {
-                        "$cond": [
-                            {"$eq": ["$last_message", ""]},
-                            {"$cond": [{"$ne": ["$last_message_image", ""]}, "📷 Photo", ""]},
-                            "$last_message"
-                        ]
-                    },
-                    "last_message_time": 1,
-                    "last_message_sent_by_me": 1,
-                    "last_message_read": 1,
-                    "unread_count": {
-                        "$ifNull": [{"$arrayElemAt": ["$unread.count", 0]}, 0]
-                    },
-                    "online": {"$literal": False}
-                }
-            },
-            {"$sort": {"last_message_time": -1}}
-        ]
-        
-        conversations = list(messages.aggregate(pipeline))
-        
-        for conv in conversations:
-            conv['last_message_time'] = conv['last_message_time'].isoformat()
-            conv.pop('_id', None)
-            if not conv.get('profile_pic'):
-                conv['profile_pic'] = ""
-        
-        logger.info(f"✓ Loaded {len(conversations)} conversations")
-        return conversations, None
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get unique conversation partners with last message
+            cursor.execute('''
+                SELECT DISTINCT
+                    CASE 
+                        WHEN m.from_user_id = ? THEN m.to_user_id
+                        ELSE m.from_user_id
+                    END as other_user_id,
+                    u.username,
+                    u.profile_pic,
+                    (SELECT text FROM messages m2 
+                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
+                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
+                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+                    (SELECT timestamp FROM messages m2 
+                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
+                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
+                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message_time,
+                    (SELECT image FROM messages m2 
+                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
+                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
+                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message_image,
+                    (SELECT from_user_id FROM messages m2 
+                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
+                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
+                     ORDER BY m2.timestamp DESC LIMIT 1) as last_sender_id
+                FROM messages m
+                JOIN users u ON u.id = other_user_id
+                WHERE m.from_user_id = ? OR m.to_user_id = ?
+                ORDER BY last_message_time DESC
+                LIMIT 50
+            ''', (int(user_id),) * 11)
+            
+            conversations = cursor.fetchall()
+            
+            result = []
+            for conv in conversations:
+                last_msg = conv['last_message'] or ''
+                if not last_msg and conv['last_message_image']:
+                    last_msg = '📷 Photo'
+                
+                result.append({
+                    "user_id": str(conv['other_user_id']),
+                    "username": conv['username'],
+                    "profile_pic": conv['profile_pic'] or '',
+                    "last_message": last_msg,
+                    "last_message_time": conv['last_message_time'],
+                    "last_message_sent_by_me": conv['last_sender_id'] == int(user_id),
+                    "last_message_read": True,
+                    "unread_count": 0,
+                    "online": False
+                })
+            
+            logger.info(f"✓ Loaded {len(result)} conversations")
+            return result, None
+            
     except Exception as e:
-        logger.error(f"✗ Get conversations error: {e}", exc_info=True)
+        logger.error(f"✗ Get conversations error: {e}")
         return [], str(e)
 
 
 def mark_messages_read(user_id, other_user_id):
     """Mark messages as read"""
     try:
-        result = messages.update_many(
-            {
-                "from_user_id": ObjectId(other_user_id),
-                "to_user_id": ObjectId(user_id),
-                "read": False
-            },
-            {"$set": {"read": True}}
-        )
-        
-        logger.info(f"✓ Marked {result.modified_count} messages as read")
-        return True, f"{result.modified_count} messages marked as read"
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE messages 
+                SET read = 1
+                WHERE from_user_id = ? AND to_user_id = ? AND read = 0
+            ''', (int(other_user_id), int(user_id)))
+            
+            conn.commit()
+            return True, "Messages marked as read"
+            
     except Exception as e:
         logger.error(f"✗ Mark read error: {e}")
         return False, str(e)
@@ -630,22 +606,29 @@ def mark_messages_read(user_id, other_user_id):
 def search_users_by_username(query, limit=20):
     """Search users by username"""
     try:
-        users_list = list(users.find(
-            {"username": {"$regex": query, "$options": "i"}},
-            {"password": 0, "email": 0}
-        ).limit(limit))
-        
-        results = []
-        for user in users_list:
-            results.append({
-                "user_id": str(user['_id']),
-                "username": user['username'],
-                "profile_pic": user.get('profile_pic', '')
-            })
-        
-        logger.info(f"✓ Found {len(results)} users matching '{query}'")
-        return results, None
-        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, username, profile_pic
+                FROM users
+                WHERE username LIKE ?
+                ORDER BY username
+                LIMIT ?
+            ''', (f'%{query}%', limit))
+            
+            users = cursor.fetchall()
+            
+            results = []
+            for user in users:
+                results.append({
+                    "user_id": str(user['id']),
+                    "username": user['username'],
+                    "profile_pic": user['profile_pic'] or ''
+                })
+            
+            logger.info(f"✓ Found {len(results)} users matching '{query}'")
+            return results, None
+            
     except Exception as e:
         logger.error(f"✗ Search users error: {e}")
         return [], str(e)
