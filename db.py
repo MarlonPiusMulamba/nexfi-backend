@@ -524,60 +524,66 @@ def get_user_conversations(user_id):
         with get_db() as conn:
             cursor = conn.cursor()
             
-            # Get unique conversation partners with last message
+            # Get all unique conversation partners
             cursor.execute('''
                 SELECT DISTINCT
                     CASE 
-                        WHEN m.from_user_id = ? THEN m.to_user_id
-                        ELSE m.from_user_id
-                    END as other_user_id,
-                    u.username,
-                    u.profile_pic,
-                    (SELECT text FROM messages m2 
-                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
-                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
-                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
-                    (SELECT timestamp FROM messages m2 
-                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
-                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
-                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message_time,
-                    (SELECT image FROM messages m2 
-                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
-                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
-                     ORDER BY m2.timestamp DESC LIMIT 1) as last_message_image,
-                    (SELECT from_user_id FROM messages m2 
-                     WHERE (m2.from_user_id = ? AND m2.to_user_id = other_user_id)
-                        OR (m2.from_user_id = other_user_id AND m2.to_user_id = ?)
-                     ORDER BY m2.timestamp DESC LIMIT 1) as last_sender_id
-                FROM messages m
-                JOIN users u ON u.id = other_user_id
-                WHERE m.from_user_id = ? OR m.to_user_id = ?
-                ORDER BY last_message_time DESC
-                LIMIT 50
-            ''', (int(user_id),) * 11)
+                        WHEN from_user_id = ? THEN to_user_id
+                        ELSE from_user_id
+                    END as other_user_id
+                FROM messages
+                WHERE from_user_id = ? OR to_user_id = ?
+            ''', (int(user_id), int(user_id), int(user_id)))
             
-            conversations = cursor.fetchall()
+            partners = cursor.fetchall()
             
             result = []
-            for conv in conversations:
-                last_msg = conv['last_message'] or ''
-                if not last_msg and conv['last_message_image']:
-                    last_msg = '📷 Photo'
+            for partner in partners:
+                partner_id = partner['other_user_id']
                 
-                result.append({
-                    "user_id": str(conv['other_user_id']),
-                    "username": conv['username'],
-                    "profile_pic": conv['profile_pic'] or '',
-                    "last_message": last_msg,
-                    "last_message_time": conv['last_message_time'],
-                    "last_message_sent_by_me": conv['last_sender_id'] == int(user_id),
-                    "last_message_read": True,
-                    "unread_count": 0,
-                    "online": False
-                })
+                # Get user info
+                cursor.execute('''
+                    SELECT username, profile_pic FROM users WHERE id = ?
+                ''', (partner_id,))
+                user_info = cursor.fetchone()
+                
+                if not user_info:
+                    continue
+                
+                # Get last message
+                cursor.execute('''
+                    SELECT text, image, timestamp, from_user_id
+                    FROM messages
+                    WHERE (from_user_id = ? AND to_user_id = ?)
+                       OR (from_user_id = ? AND to_user_id = ?)
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''', (int(user_id), partner_id, partner_id, int(user_id)))
+                
+                last_msg = cursor.fetchone()
+                
+                if last_msg:
+                    last_message_text = last_msg['text'] or ''
+                    if not last_message_text and last_msg['image']:
+                        last_message_text = '📷 Photo'
+                    
+                    result.append({
+                        "user_id": str(partner_id),
+                        "username": user_info['username'],
+                        "profile_pic": user_info['profile_pic'] or '',
+                        "last_message": last_message_text,
+                        "last_message_time": last_msg['timestamp'],
+                        "last_message_sent_by_me": last_msg['from_user_id'] == int(user_id),
+                        "last_message_read": True,
+                        "unread_count": 0,
+                        "online": False
+                    })
+            
+            # Sort by last message time
+            result.sort(key=lambda x: x['last_message_time'], reverse=True)
             
             logger.info(f"✓ Loaded {len(result)} conversations")
-            return result, None
+            return result[:50], None  # Limit to 50
             
     except Exception as e:
         logger.error(f"✗ Get conversations error: {e}")
